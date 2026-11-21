@@ -31,6 +31,8 @@
         <!-- Optional App Store top button: Google Play or Amazon Appstore. -->
         <package android:name="com.android.vending" />
         <package android:name="com.amazon.venezia" />
+        <!-- Selenview / HiSilicon TVs (the Lemon launcher): the source list of the maker's TV settings app (Sources in the drawer). -->
+        <package android:name="com.hisilicon.tvsetting" />
         <package android:name="com.netflix.ninja" />
         <package android:name="com.google.android.youtube.tv" />
         <package android:name="com.amazon.firetv.youtube" />
