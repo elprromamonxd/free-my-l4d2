@@ -400,6 +400,10 @@ final class HomeApps {
                 c.getPackageManager().resolveActivity(tcorrection, 0) != null ? tcorrection : new Intent("action.htcsettings.prjsettings"));
         device(c, items, "mirroring", Ui.tr("Screen Mirroring"), "cast",
                 new Intent().setComponent(new ComponentName("com.softwinner.miracastReceiver", "com.softwinner.miracastReceiver.Miracast")));
+        // Selenview / HiSilicon TVs (the Lemon launcher; a Dayo 43", Android 14): the remote's Source button opens this list
+        // only from Lemon, so the drawer opens it. It shows only where the TV has it.
+        device(c, items, "sources", Ui.tr("Sources"), "hdmi",
+                new Intent().setComponent(new ComponentName("com.hisilicon.tvsetting", "com.hisilicon.tvsetting.main.QuickSourceActivity")));
         return items;
     }
 
@@ -711,6 +715,11 @@ final class HomeApps {
             return true;
         } catch (ActivityNotFoundException | SecurityException e) {
             AppLog.w("couldn't open " + it.label + ": " + e.getMessage());
+            // A maker's screen an app may not start: the TV's own ADB (the shell) may.
+            if (it.kind == DEVICE && it.intent.getComponent() != null) {
+                startViaAdb(a.getApplicationContext(), it.intent.getComponent());
+                return true;
+            }
             if (plain == null || plain == intent) return false;
             plain.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             try {
@@ -721,6 +730,17 @@ final class HomeApps {
                 return false;
             }
         }
+    }
+
+    /** `am start` through the TV's own ADB, off the main thread. */
+    private static void startViaAdb(Context c, ComponentName cn) {
+        new Thread(() -> {
+            try (Adb adb = Adb.connect(c, 10_000, null)) {
+                adb.shell("am start -n " + cn.flattenToShortString());
+            } catch (IOException e) {
+                AppLog.w("couldn't open " + cn.flattenToShortString() + " through ADB: " + e.getMessage());
+            }
+        }, "free-my-tv-start").start();
     }
 
     /**
