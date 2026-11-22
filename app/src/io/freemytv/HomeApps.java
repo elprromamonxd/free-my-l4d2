@@ -28,6 +28,7 @@ import android.media.tv.TvInputManager;
 import android.os.Build;
 import android.provider.Settings;
 import android.util.DisplayMetrics;
+import android.view.KeyEvent;
 import android.view.View;
 
 import java.io.File;
@@ -736,6 +737,22 @@ final class HomeApps {
                 return false;
             }
         }
+    }
+
+    /**
+     * The Source key of a Selenview / HiSilicon remote (scan code 250, from "Hi keyboard"): the TV's list of sources,
+     * as the drawer's Sources opens it. Left to the TV, it answers "the current application does not support switching
+     * source operations" unless its own home screen is in front. True if it is the key (it is then consumed).
+     */
+    static boolean sourceKey(Context c, KeyEvent e) {
+        if (e.getScanCode() != 250) return false;
+        ComponentName cn = new ComponentName("com.hisilicon.tvsetting", "com.hisilicon.tvsetting.main.QuickSourceActivity");
+        if (c.getPackageManager().resolveActivity(new Intent().setComponent(cn), 0) == null) return false;
+        if (e.getAction() == KeyEvent.ACTION_DOWN && e.getRepeatCount() == 0) {
+            AppLog.w("remote key " + e.getKeyCode() + " (scan 250) -> sources");
+            startViaAdb(c.getApplicationContext(), cn);
+        }
+        return true;
     }
 
     /** `am start` through the TV's own ADB, off the main thread. */

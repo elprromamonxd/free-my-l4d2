@@ -175,6 +175,7 @@ public class HomeActivity extends Activity {
                     + (event.getAction() == KeyEvent.ACTION_UP ? " up" : "") + "), no Live TV");
         }
         if (RemoteKeys.onKey(this, event)) return true;
+        if (HomeApps.sourceKey(this, event)) return true;
         // The Apps key, unless it has a row in Remote Buttons on this TV (Hisense): there the row decides, and on
         // Nothing the key is left to the TV, so it must not open the sheet here either. Not by whether the key service
         // is on: a TCL's is on for its app buttons, and its Apps key then did nothing.
