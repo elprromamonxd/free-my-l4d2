@@ -701,6 +701,12 @@ final class HomeApps {
                 plain = new Intent().setComponent(new ComponentName("com.android.tv.settings", "com.android.tv.settings.MainSettings"));
                 break;
             case DEVICE:
+                // HiSilicon's source list turns an app down as the caller ("the current application does not support
+                // switching source operations"): the TV's own ADB (the shell) is let through.
+                if (it.intent.getComponent() != null && "com.hisilicon.tvsetting".equals(it.intent.getComponent().getPackageName())) {
+                    startViaAdb(a.getApplicationContext(), it.intent.getComponent());
+                    return true;
+                }
                 // A fresh task: else Back walks through whatever the maker's settings app had open before
                 intent = new Intent(it.intent).addFlags(Intent.FLAG_ACTIVITY_CLEAR_TASK);
                 break;
