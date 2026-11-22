@@ -409,6 +409,13 @@ final class Prefs {
     static boolean androidApps() { return sp().getBoolean("androidapps", false); }
     static void setAndroidApps(boolean on) { put("androidapps", on); }
 
+    /** The home screen in the look of Left 4 Dead 2 (L4dView) instead of the original one. */
+    static boolean l4d2() { return sp().getBoolean("l4d2", false); }
+    static void setL4d2(boolean on) { put("l4d2", on); }
+    /** In that look, the apps' names on the strip's tiles (their frame has a band for them). */
+    static boolean l4dNames() { return sp().getBoolean("l4dnames", true); }
+    static void setL4dNames(boolean on) { put("l4dnames", on); }
+
     // MARK: - TMDB key
 
     /**

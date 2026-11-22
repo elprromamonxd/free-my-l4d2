@@ -755,6 +755,14 @@ final class HomeApps {
         return true;
     }
 
+    /** The TV's own list of sources (a Selenview / HiSilicon TV), opened through the TV's ADB. False where the TV has none. */
+    static boolean openSources(Context c) {
+        ComponentName cn = new ComponentName("com.hisilicon.tvsetting", "com.hisilicon.tvsetting.main.QuickSourceActivity");
+        if (c.getPackageManager().resolveActivity(new Intent().setComponent(cn), 0) == null) return false;
+        startViaAdb(c.getApplicationContext(), cn);
+        return true;
+    }
+
     /** `am start` through the TV's own ADB, off the main thread. */
     private static void startViaAdb(Context c, ComponentName cn) {
         new Thread(() -> {

@@ -28,7 +28,11 @@ public class HomeActivity extends Activity {
         return intent != null && (intent.getBooleanExtra(EXTRA_ALL_APPS, false)
                 || Intent.ACTION_ALL_APPS.equals(intent.getAction()));
     }
+    /** Chooses the home screen's look: true = Left 4 Dead 2's (L4dView), false = the original (adb shell am start ... --ez io.freemytv.l4d2 true). */
+    static final String EXTRA_L4D2 = "io.freemytv.l4d2";
+
     private HomeView home;
+    private L4dView l4d;
     private int prefsVersion = Prefs.version;   // settings changed while we were away: start over
 
     @Override protected void onCreate(Bundle savedInstanceState) {
@@ -49,21 +53,50 @@ public class HomeActivity extends Activity {
             return;
         }
         Ui.init(this);
-        home = new HomeView(this);
-        setContentView(home);
+        applyLook(getIntent());
+        if (Prefs.l4d2()) {
+            try {
+                l4d = new L4dView(this);
+            } catch (RuntimeException e) {   // never leave the TV without a home screen: the original one
+                AppLog.w("the L4D2 look failed, back to the original: " + e);
+                Prefs.setL4d2(false);
+            }
+        }
+        if (l4d != null) setContentView(l4d);
+        else {
+            home = new HomeView(this);
+            setContentView(home);
+        }
         getWindow().setBackgroundDrawable(null);
-        if (wantsAllApps(getIntent())) home.showAllApps();
-        else if (getIntent().getBooleanExtra(EXTRA_INPUTS, false)) home.showInputs();
+        if (wantsAllApps(getIntent())) showAllApps();
+        else if (getIntent().getBooleanExtra(EXTRA_INPUTS, false)) showInputs();
         // At power-on "Live TV" (#346): the first time the home screen comes up after a full start, in Free My TV mode.
         if (HomeMode.noteHomeShown(this) && SystemClock.elapsedRealtime() < 240_000 && "live".equals(Prefs.powerOn())) {
             org.json.JSONObject s = HomeMode.state(this);
             liveWaits = HomeMode.FREE.equals(s.optString("mode")) && !s.optBoolean("homeReverted");
             if (liveWaits) {
                 AppLog.w("at power-on: Live TV in 10 s, unless a key comes first");
-                home.postDelayed(powerOnLive, 10_000);
+                screen().postDelayed(powerOnLive, 10_000);
             }
         }
     }
+
+    /** The look asked for by the intent (read once: recreate() hands the same intent over again). */
+    private static void applyLook(Intent intent) {
+        if (intent == null || !intent.hasExtra(EXTRA_L4D2)) return;
+        Prefs.setL4d2(intent.getBooleanExtra(EXTRA_L4D2, false));
+        intent.removeExtra(EXTRA_L4D2);
+    }
+
+    // The two looks answer the same calls.
+    private android.view.View screen() { return l4d != null ? l4d : home; }
+    private void showAllApps() { if (l4d != null) l4d.showAllApps(); else if (home != null) home.showAllApps(); }
+    private void showInputs() { if (l4d != null) l4d.showInputs(); else if (home != null) home.showInputs(); }
+    private void showRecents() { if (l4d != null) l4d.showRecents(); else if (home != null) home.showRecents(); }
+    private void resetHome() { if (l4d != null) l4d.reset(true); else if (home != null) home.reset(true); }
+    private void resumeHome() { if (l4d != null) l4d.resume(); else if (home != null) home.resume(); }
+    private void pauseHome() { if (l4d != null) l4d.pause(); else if (home != null) home.pause(); }
+    private boolean homeKey(KeyEvent e) { return l4d != null ? l4d.onKey(e) : home != null && home.onKey(e); }
 
     /**
      * liveWaits: At power-on "Live TV" is still to come in this start. liveDark: the screen went off while it waited (a
@@ -102,11 +135,11 @@ public class HomeActivity extends Activity {
             recreate();   // a new language or city: draw everything again
             return;
         }
-        if (home != null) home.resume();
-        if (liveDark && home != null) {   // the screen came on with the home screen in front
+        resumeHome();
+        if (liveDark && screen() != null) {   // the screen came on with the home screen in front
             liveDark = false;
-            home.removeCallbacks(powerOnLive);
-            home.postDelayed(powerOnLive, 10_000);
+            screen().removeCallbacks(powerOnLive);
+            screen().postDelayed(powerOnLive, 10_000);
         }
         Updates.tellOnce(this);   // an update the week's check got ready: said once
     }
@@ -117,7 +150,7 @@ public class HomeActivity extends Activity {
             PowerManager power = getSystemService(PowerManager.class);
             liveDark = power != null && !power.isInteractive();
         }
-        if (home != null) home.pause();
+        pauseHome();
         super.onPause();
     }
 
@@ -128,20 +161,25 @@ public class HomeActivity extends Activity {
             liveWaits = liveDark = false;
             AppLog.w("at power-on: Home came first, no Live TV");
         }
-        if (home == null) return;
+        if (intent.hasExtra(EXTRA_L4D2)) {   // another look was asked for: draw everything again
+            applyLook(intent);
+            recreate();
+            return;
+        }
+        if (screen() == null) return;
         if (wantsAllApps(intent)) {
-            home.showAllApps();
+            showAllApps();
             return;
         }
         if (intent.getBooleanExtra(EXTRA_INPUTS, false)) {
-            home.showInputs();
+            showInputs();
             return;
         }
         long now = SystemClock.uptimeMillis();
         boolean twice = Prefs.recents().equals("home") && lastHome != 0 && now - lastHome < TWICE_MS;
         lastHome = twice ? 0 : now;
-        if (twice) home.showRecents();
-        else home.reset(true);
+        if (twice) showRecents();
+        else resetHome();
     }
 
     /** When Home was last pressed, and how soon the second press counts (Settings > Home Settings). */
@@ -149,10 +187,9 @@ public class HomeActivity extends Activity {
     private static final long TWICE_MS = 700;
 
     @Override protected void onDestroy() {
-        if (home != null) {
-            home.removeCallbacks(powerOnLive);
-            home.destroy();
-        }
+        if (screen() != null) screen().removeCallbacks(powerOnLive);
+        if (l4d != null) l4d.destroy();
+        else if (home != null) home.destroy();
         super.onDestroy();
     }
 
@@ -180,10 +217,10 @@ public class HomeActivity extends Activity {
         // Nothing the key is left to the TV, so it must not open the sheet here either. Not by whether the key service
         // is on: a TCL's is on for its app buttons, and its Apps key then did nothing.
         if (event.getKeyCode() == KeyEvent.KEYCODE_ALL_APPS && !remoteButton(KeyEvent.KEYCODE_ALL_APPS)) {
-            if (event.getAction() == KeyEvent.ACTION_DOWN && home != null) home.showAllApps();
+            if (event.getAction() == KeyEvent.ACTION_DOWN) showAllApps();
             return true;
         }
-        if (home != null && home.onKey(event)) return true;
+        if (homeKey(event)) return true;
         return super.dispatchKeyEvent(event);
     }
 
