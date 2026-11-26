@@ -47,7 +47,7 @@ final class L4dView extends View {
     // MARK: - Layout (1920x1080)
 
     private static final float POLA_X = 215, POLA_Y = 100, POLA_W = 350;
-    private static final float STRIP_X = 700, STRIP_Y = 265, TILE_W = 190, STEP = 235;
+    private static final float STRIP_X = 681, STRIP_Y = 240, TILE_W = 192, STEP = 207;
     private static final int STRIP_N = 5;
     private static final float MENU_STEP = 50;
     /** The polaroid's turn: one angle for every app, to the left (negative = counterclockwise), as in the game. */
@@ -55,7 +55,12 @@ final class L4dView extends View {
     /** How far each place of the strip sits above (-) or below (+) the line, from the place before the first to the one after the last: the game's tiles are not lined up. */
     private static final float[] JITTER = {0, -6, 2, 7, 3, -3, 0};
     private static final float TITLE_SIZE = 40, DESC_SIZE = 28, MENU_SIZE = 35, LABEL_SIZE = 22;
-    private static final float CLOCK_RIGHT = 1790, CLOCK_BASE = 175, CLOCK_SIZE = 140, AMPM_SIZE = 56;
+    private static final float CLOCK_RIGHT = 1800, CLOCK_BASE = 200, CLOCK_SIZE = 150, AMPM_SIZE = 60;
+    /** The clock is the menu's own gray at 70 % (the colon keeps its red, also at 70 %). */
+    private static final int CLOCK_ALPHA = 179;
+    // The glow of what is selected breathes: it grows and shrinks (radius in 1920x1080 pixels, one breath every PULSE_PERIOD seconds).
+    private static final boolean PULSE = true;
+    private static final float GLOW_MIN = 10, GLOW_MAX = 24, PULSE_PERIOD = 1.6f;
     private static final int GRID_COLS = 6, GRID_ROWS = 3;
     private static final float GRID_Y = 170, GRID_GAP = 45;
     private static final int ICON = 320;
@@ -119,9 +124,9 @@ final class L4dView extends View {
     private final RectF arrowDst = new RectF();
     private final Rect src = new Rect();
 
-    // The springs: the glow of the focused text, the strip's slide (in slots), the polaroid's pop, the grid's scroll (in rows).
-    private final Spring glow = new Spring(0.30f, 1f, 1), slide = new Spring(0.22f, 0.9f, 0),
-            pop = new Spring(0.34f, 0.55f, 0), polaOn = new Spring(0.25f, 1f, 1), blogScroll = new Spring(0.2f, 1f, 0), scroll = new Spring(0.26f, 1f, 0);
+    // The springs: the glow of the focused text, the strip's slide (in slots), the grid's scroll (in rows).
+    private final Spring glow = new Spring(0.30f, 1f, 1), slide = new Spring(0.22f, 1f, 0),
+            polaOn = new Spring(0.25f, 1f, 1), blogScroll = new Spring(0.2f, 1f, 0), scroll = new Spring(0.26f, 1f, 0);
     private long last;
 
     private final Paint pBg = new Paint(), pBmp = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG),
@@ -165,9 +170,12 @@ final class L4dView extends View {
         pValue = Ui.text(tTitle, 32, IDLE);
         pValue.setTextAlign(Paint.Align.RIGHT);
         pLabel = Ui.text(tTitle, LABEL_SIZE, SELECTED);
-        pClock = Ui.text(tClock, CLOCK_SIZE, SELECTED);
+        pClock = Ui.text(tClock, CLOCK_SIZE, IDLE);
         pColon = Ui.text(tClock, CLOCK_SIZE, RED);
-        pAmPm = Ui.text(tClock, AMPM_SIZE, SELECTED);
+        pAmPm = Ui.text(tClock, AMPM_SIZE, IDLE);
+        pClock.setAlpha(CLOCK_ALPHA);
+        pColon.setAlpha(CLOCK_ALPHA);
+        pAmPm.setAlpha(CLOCK_ALPHA);
         pDescription = Ui.text(tBody, DESC_SIZE, SELECTED);
         pBody = Ui.text(tBody, BLOG_SIZE, SELECTED);
         pHead = Ui.text(tBodyBold, BLOG_HEAD_SIZE, BLOG_RED);
@@ -380,10 +388,10 @@ final class L4dView extends View {
     @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
         k = w / 1920f;
-        white = rawWhite.scaledTo(Math.round(POLA_W * k * 1.12f));
+        white = rawWhite.scaledTo(Math.round(POLA_W * k));
         tileName = rawName.scaledTo(Math.round(TILE_W * k));
         tilePlain = rawPlain.scaledTo(Math.round(TILE_W * k));
-        polaPlain = rawPlain.scaledTo(Math.round(POLA_W * k * 1.12f));
+        polaPlain = rawPlain.scaledTo(Math.round(POLA_W * k));
         pBg.setShader(new LinearGradient(0, 0, 0, h, Color.rgb(36, 32, 30), Color.rgb(7, 7, 7), Shader.TileMode.CLAMP));
         pTitle.setTextSize(TITLE_SIZE * k);
         pMenu.setTextSize(MENU_SIZE * k);
@@ -433,7 +441,7 @@ final class L4dView extends View {
         float dt = last == 0 ? 0.016f : Math.min((now - last) / 1e9f, 0.05f);
         last = now;
         polaOn.target = focus == 0 && mode == HOME ? 1 : 0;
-        boolean moving = glow.step(dt) | slide.step(dt) | pop.step(dt) | scroll.step(dt) | polaOn.step(dt) | blogScroll.step(dt);
+        boolean moving = glow.step(dt) | slide.step(dt) | scroll.step(dt) | polaOn.step(dt) | blogScroll.step(dt);
         c.drawRect(0, 0, getWidth(), getHeight(), pBg);
         if (mode == GRID) drawGrid(c);
         else if (mode == BLOG) drawBlog(c);
@@ -448,13 +456,17 @@ final class L4dView extends View {
             if (mode == EXTRAS) drawExtras(c);
         }
         if (moving) postInvalidateOnAnimation();
-        else last = 0;
+        else {
+            last = 0;
+            if (PULSE) postInvalidateDelayed(40);   // the glow keeps breathing: about 25 frames a second
+        }
     }
 
     /** White glow behind the text (the shadow layer, drawn with it): it fades in when the text takes the focus. */
     private void glowOn(Paint p) {
         float g = Math.max(0f, Math.min(1f, glow.value));
-        p.setShadowLayer(16 * k, 0, 0, Color.argb((int) (220 * g), 255, 255, 255));
+        float breath = PULSE ? 0.5f + 0.5f * (float) Math.sin(System.nanoTime() / 1e9 * 2 * Math.PI / PULSE_PERIOD) : 0.5f;
+        p.setShadowLayer((GLOW_MIN + (GLOW_MAX - GLOW_MIN) * breath) * k, 0, 0, Color.argb((int) (220 * g), 255, 255, 255));
     }
 
     private void drawClock(Canvas c) {
@@ -564,7 +576,7 @@ final class L4dView extends View {
 
     private void drawPolaroid(Canvas c) {
         Entry e = apps.get(sel);
-        float w = POLA_W * k * (1 + 0.12f * pop.value);
+        float w = POLA_W * k;
         float h = w * white.h / white.w;
         float cx = (POLA_X + POLA_W / 2f) * k, cy = (POLA_Y + polaHeight() / 2f) * k;
         c.save();
@@ -609,7 +621,7 @@ final class L4dView extends View {
 
     private void drawTitle(Canvas c) {
         boolean on = focus == 0 && mode == HOME;
-        pTitle.setColor(SELECTED);
+        pTitle.setColor(on ? SELECTED : IDLE);
         if (on) glowOn(pTitle);
         c.drawText(title, POLA_X * k, titleY() * k, pTitle);
         pTitle.clearShadowLayer();
@@ -860,8 +872,6 @@ final class L4dView extends View {
         sel = Math.floorMod(sel + dir, n);
         slide.snap(dir);
         slide.target = 0;
-        pop.snap(1);
-        pop.target = 0;
         layoutTitle();
         invalidate();
     }
