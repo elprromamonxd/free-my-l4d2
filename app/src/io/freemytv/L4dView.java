@@ -2,6 +2,7 @@ package io.freemytv;
 
 import android.app.Activity;
 import android.content.Context;
+import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Canvas;
@@ -9,11 +10,15 @@ import android.graphics.Color;
 import android.graphics.LinearGradient;
 import android.graphics.Paint;
 import android.graphics.Path;
+import android.graphics.PorterDuff;
+import android.graphics.PorterDuffColorFilter;
+import android.graphics.Rect;
 import android.graphics.RectF;
 import android.graphics.Shader;
 import android.graphics.Typeface;
 import android.graphics.drawable.AdaptiveIconDrawable;
 import android.graphics.drawable.Drawable;
+import android.net.Uri;
 import android.util.LruCache;
 import android.view.KeyEvent;
 import android.view.View;
@@ -44,7 +49,11 @@ final class L4dView extends View {
     private static final float POLA_X = 215, POLA_Y = 100, POLA_W = 350;
     private static final float STRIP_X = 700, STRIP_Y = 265, TILE_W = 190, STEP = 235;
     private static final int STRIP_N = 5;
-    private static final float TITLE_Y = 555, MENU_Y = 670, MENU_STEP = 50;
+    private static final float MENU_STEP = 50;
+    /** The polaroid's turn: one angle for every app, to the left (negative = counterclockwise), as in the game. */
+    private static final float POLA_ANGLE = -3f;
+    /** How far each place of the strip sits above (-) or below (+) the line, from the place before the first to the one after the last: the game's tiles are not lined up. */
+    private static final float[] JITTER = {0, -6, 2, 7, 3, -3, 0};
     private static final float TITLE_SIZE = 40, DESC_SIZE = 28, MENU_SIZE = 35, LABEL_SIZE = 22;
     private static final float CLOCK_RIGHT = 1790, CLOCK_BASE = 175, CLOCK_SIZE = 140, AMPM_SIZE = 56;
     private static final int GRID_COLS = 6, GRID_ROWS = 3;
@@ -53,12 +62,19 @@ final class L4dView extends View {
     private static final int MENU_N = 6;
 
     private static final int SELECTED = Color.rgb(250, 250, 250), IDLE = Color.rgb(127, 127, 135), RED = Color.rgb(214, 49, 38);
-    private static final int HOME = 0, EXTRAS = 1, GRID = 2;
+    private static final int HOME = 0, EXTRAS = 1, GRID = 2, BLOG = 3;
 
-    /** An app of the wheel, with the small differences each tile keeps (a tilt of the polaroid, a nudge of the tile). */
+    // The blog page (1920x1080): the post's date and title in red, the text on the left, the picture and its link on the right.
+    private static final int BLOG_RED = Color.rgb(255, 20, 20);
+    private static final float BLOG_X = 58, BLOG_DATE_Y = 95, BLOG_TITLE_Y = 152, BLOG_HEAD_SIZE = 48;
+    private static final float BLOG_BODY_X = 84, BLOG_BODY_Y = 215, BLOG_BODY_W = 860, BLOG_LINE = 55, BLOG_SIZE = 44;
+    private static final int BLOG_LINES = 10;
+    private static final float BLOG_IMG_X = 1230, BLOG_IMG_Y = 190, BLOG_IMG_W = 512, BLOG_IMG_H = 256;
+    private static final float BLOG_BACK_X = 95, BLOG_BACK_Y = 765;
+
+    /** An app of the wheel. */
     private static final class Entry {
         final String pkg, label, upper;
-        final float angle, dy, rot;
         String fit;
         float fitWidth;
 
@@ -66,10 +82,6 @@ final class L4dView extends View {
             this.pkg = pkg;
             this.label = label;
             this.upper = label.toUpperCase(Ui.locale());
-            int h = pkg.hashCode();
-            angle = (h & 0xff) % 7 - 3;
-            dy = ((h >> 8) & 0xff) % 11 - 5;
-            rot = (((h >> 16) & 0xff) % 5 - 2) * 0.5f;
         }
 
         /** The name cut to fit `maxWidth` with the paint as it is now. */
@@ -96,16 +108,25 @@ final class L4dView extends View {
     private boolean names;
     private String title = "";
 
-    private final Theme.Frame white, black, plain;
+    private final Theme.Frame rawWhite, rawName, rawPlain;   // as they were read
+    private Theme.Frame white, tileName, tilePlain;          // at the size they are drawn
+    private final Bitmap arrow;
+    private Theme.Frame polaPlain;                            // the polaroid's black frame, at its size
+    private final Blog blog;
+    private final Bitmap blogImage, biohazard;
+    private final ArrayList<String> blogLines = new ArrayList<>();
+    private int blogFocus, blogTop;                          // what is selected (0 text, 1 link, 2 back); the first line shown
+    private final RectF arrowDst = new RectF();
+    private final Rect src = new Rect();
 
-    // The springs: the glow of the focused text, the strip's slide (in slots), the polaroid's pop and tilt, the grid's scroll (in rows).
+    // The springs: the glow of the focused text, the strip's slide (in slots), the polaroid's pop, the grid's scroll (in rows).
     private final Spring glow = new Spring(0.30f, 1f, 1), slide = new Spring(0.22f, 0.9f, 0),
-            pop = new Spring(0.34f, 0.55f, 0), tilt = new Spring(0.34f, 0.65f, 0), scroll = new Spring(0.26f, 1f, 0);
+            pop = new Spring(0.34f, 0.55f, 0), polaOn = new Spring(0.25f, 1f, 1), blogScroll = new Spring(0.2f, 1f, 0), scroll = new Spring(0.26f, 1f, 0);
     private long last;
 
     private final Paint pBg = new Paint(), pBmp = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG),
             pFill = new Paint(), pStroke = new Paint(Paint.ANTI_ALIAS_FLAG), pArrow = new Paint(Paint.ANTI_ALIAS_FLAG);
-    private final Paint pTitle, pMenu, pSub, pValue, pLabel, pClock, pColon, pAmPm;
+    private final Paint pTitle, pMenu, pSub, pValue, pLabel, pClock, pColon, pAmPm, pBody, pHead, pBack, pTint;
     private final Path arrowLeft = new Path(), arrowRight = new Path();
     private final RectF dst = new RectF(), frameDst = new RectF();
 
@@ -134,9 +155,10 @@ final class L4dView extends View {
         act = a;
         pm = a.getPackageManager();
         Typeface bold = Typeface.create(Typeface.DEFAULT, Typeface.BOLD);
-        Typeface tTitle = Theme.font(a, "stubble", bold);
-        Typeface tClock = Theme.font(a, "future", bold);
-        Typeface tBody = Theme.font(a, "arial", Typeface.SANS_SERIF);
+        Typeface tTitle = Theme.font(a, "stubble", bold, true);
+        Typeface tClock = Theme.font(a, "future", bold, false);
+        Typeface tBody = Theme.font(a, "arial", Typeface.SANS_SERIF, false);
+        Typeface tBodyBold = Theme.font(a, "arial", Typeface.SANS_SERIF, true);
         pTitle = Ui.text(tTitle, TITLE_SIZE, SELECTED);
         pMenu = Ui.text(tTitle, MENU_SIZE, IDLE);
         pSub = Ui.text(tTitle, 32, IDLE);
@@ -147,12 +169,32 @@ final class L4dView extends View {
         pColon = Ui.text(tClock, CLOCK_SIZE, RED);
         pAmPm = Ui.text(tClock, AMPM_SIZE, SELECTED);
         pDescription = Ui.text(tBody, DESC_SIZE, SELECTED);
+        pBody = Ui.text(tBody, BLOG_SIZE, SELECTED);
+        pHead = Ui.text(tBodyBold, BLOG_HEAD_SIZE, BLOG_RED);
+        pBack = Ui.text(tTitle, BLOG_SIZE, IDLE);
+        pTint = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG);
+        pTint.setColorFilter(new PorterDuffColorFilter(BLOG_RED, PorterDuff.Mode.SRC_IN));
         pArrow.setColor(Color.WHITE);
         pStroke.setStyle(Paint.Style.STROKE);
         names = Prefs.l4dNames();
-        white = Theme.frame(a, Theme.WHITE_FILE, Theme.WHITE);
-        black = Theme.frame(a, Theme.BLACK_FILE, Theme.BLACK);
-        plain = Theme.frame(a, Theme.PLAIN_FILE, Theme.PLAIN);
+        rawWhite = Theme.frame(a, Theme.WHITE, "marco_blanco.png", "marcoblanco.png");
+        Theme.Frame one = Theme.frame(a, Theme.BLACK, "marco_negro.png", "marconegro.png");
+        Theme.Frame two = Theme.frame(a, Theme.PLAIN, "marco_negro_2.png", "marconegro2.png");
+        // Told apart by what each has, not by its file name: the one with a band under its window carries the app's name.
+        if (one.band.isEmpty() && !two.band.isEmpty()) {
+            rawName = two;
+            rawPlain = one;
+        } else {
+            rawName = one;
+            rawPlain = two;
+        }
+        white = rawWhite;
+        tileName = rawName;
+        tilePlain = rawPlain;
+        arrow = Theme.arrow(a);
+        blog = Blog.load(a);
+        blogImage = Theme.image(a, "blog.png");
+        biohazard = Theme.image(a, "biohazard.png");
         menu[0] = Ui.tr("Applications");
         menu[1] = Ui.tr("Settings");
         menu[2] = Ui.tr("App Store");
@@ -232,7 +274,6 @@ final class L4dView extends View {
         sel = 0;
         if (keep != null) for (int i = 0; i < apps.size(); i++) if (apps.get(i).pkg.equals(keep)) sel = i;
         gridSel = Math.min(gridSel, Math.max(0, apps.size() - 1));
-        tilt.snap(apps.isEmpty() ? 0 : apps.get(sel).angle);
         layoutTitle();
     }
 
@@ -339,6 +380,10 @@ final class L4dView extends View {
     @Override protected void onSizeChanged(int w, int h, int ow, int oh) {
         super.onSizeChanged(w, h, ow, oh);
         k = w / 1920f;
+        white = rawWhite.scaledTo(Math.round(POLA_W * k * 1.12f));
+        tileName = rawName.scaledTo(Math.round(TILE_W * k));
+        tilePlain = rawPlain.scaledTo(Math.round(TILE_W * k));
+        polaPlain = rawPlain.scaledTo(Math.round(POLA_W * k * 1.12f));
         pBg.setShader(new LinearGradient(0, 0, 0, h, Color.rgb(36, 32, 30), Color.rgb(7, 7, 7), Shader.TileMode.CLAMP));
         pTitle.setTextSize(TITLE_SIZE * k);
         pMenu.setTextSize(MENU_SIZE * k);
@@ -349,6 +394,9 @@ final class L4dView extends View {
         pColon.setTextSize(CLOCK_SIZE * k);
         pAmPm.setTextSize(AMPM_SIZE * k);
         pDescription.setTextSize(DESC_SIZE * k);
+        pBody.setTextSize(BLOG_SIZE * k);
+        pHead.setTextSize(BLOG_HEAD_SIZE * k);
+        pBack.setTextSize(BLOG_SIZE * k);
         pStroke.setStrokeWidth(3 * k);
         float aw = 22 * k, ah = 32 * k;
         arrowLeft.reset();
@@ -364,6 +412,7 @@ final class L4dView extends View {
         for (Entry e : apps) e.fit = null;
         updateClock();
         layoutTitle();
+        layoutBlog();
     }
 
     @Override protected void onAttachedToWindow() {
@@ -383,9 +432,11 @@ final class L4dView extends View {
         long now = System.nanoTime();
         float dt = last == 0 ? 0.016f : Math.min((now - last) / 1e9f, 0.05f);
         last = now;
-        boolean moving = glow.step(dt) | slide.step(dt) | pop.step(dt) | tilt.step(dt) | scroll.step(dt);
+        polaOn.target = focus == 0 && mode == HOME ? 1 : 0;
+        boolean moving = glow.step(dt) | slide.step(dt) | pop.step(dt) | scroll.step(dt) | polaOn.step(dt) | blogScroll.step(dt);
         c.drawRect(0, 0, getWidth(), getHeight(), pBg);
         if (mode == GRID) drawGrid(c);
+        else if (mode == BLOG) drawBlog(c);
         else {
             drawClock(c);
             if (!apps.isEmpty()) {
@@ -421,7 +472,6 @@ final class L4dView extends View {
         int s = Math.min(STRIP_N, n - 1);
         if (s <= 0) return;
         float v = slide.value;
-        Theme.Frame f = names ? black : plain;
         for (int j = -1; j <= s; j++) {
             float alpha = 1;
             if (v > 0) {
@@ -436,69 +486,124 @@ final class L4dView extends View {
             alpha = Math.max(0f, Math.min(1f, alpha));
             if (alpha < 0.01f) continue;
             Entry e = apps.get(Math.floorMod(sel + 1 + j, n));
-            float x = (STRIP_X + (j + v) * STEP) * k;
-            drawTile(c, e, x, STRIP_Y * k, TILE_W * k, f, alpha, names);
+            float pos = j + v;
+            float x = (STRIP_X + pos * STEP) * k;
+            drawTile(c, e, x, (STRIP_Y + jitter(pos)) * k, TILE_W * k, alpha, names);
         }
     }
 
-    /** An app in its black frame: the icon in the window, the frame over it, and the name on the band if there is one. */
-    private void drawTile(Canvas c, Entry e, float x, float y, float w, Theme.Frame f, float alpha, boolean label) {
-        float sc = w / f.w, h = f.h * sc;
+    /** The line's offset at a (fractional) place of the strip: the places keep their own, the tiles move through them. */
+    private static float jitter(float pos) {
+        float p = Math.max(0f, Math.min(JITTER.length - 1.001f, pos + 1));
+        int i = (int) p;
+        float t = p - i;
+        return JITTER[i] * (1 - t) + JITTER[i + 1] * t;
+    }
+
+    /**
+     * An app in its black frame: the icon fills the whole square and the frame goes over it. With names on, the frame
+     * is the one with the band, which covers the bottom of the icon, and the name is written on that band.
+     */
+    private void drawTile(Canvas c, Entry e, float x, float y, float w, float alpha, boolean label) {
+        Theme.Frame skin = label ? tileName : tilePlain;
+        float h = w * skin.h / skin.w;
         int a = (int) (255 * alpha);
-        c.save();
-        c.translate(x + w / 2, y + h / 2 + e.dy * k);
-        c.rotate(e.rot);
-        float l = -w / 2, t = -h / 2;
-        drawIconIn(c, e.pkg, l, t, sc, f, a);
-        if (label && !f.band.isEmpty()) {
-            float bandH = f.band.height() * sc;
+        drawIconIn(c, e.pkg, x, y, w, h, tilePlain, skin, a);
+        if (label && !skin.band.isEmpty()) {
+            float sc = w / skin.w;
+            float bandTop = y + skin.band.top * sc, bandH = h - skin.band.top * sc;
             pLabel.setTextSize(Math.min(LABEL_SIZE * k, bandH * 0.62f));
             pLabel.setAlpha(a);
-            float base = t + f.band.top * sc + bandH / 2 + Ui.halfCap(pLabel);
+            float base = bandTop + bandH / 2 + Ui.halfCap(pLabel);
             float pad = w * 0.07f;
-            c.drawText(e.fit(pLabel, w - 2 * pad), l + pad, base, pLabel);
+            c.drawText(e.fit(pLabel, w - 2 * pad), x + pad, base, pLabel);
         }
-        c.restore();
     }
 
-    /** The icon in the frame's window and the frame on top, the frame's corner at (l, t) and scaled by sc. */
-    private void drawIconIn(Canvas c, String pkg, float l, float t, float sc, Theme.Frame f, int a) {
-        dst.set(l + f.window.left * sc, t + f.window.top * sc, l + f.window.right * sc, t + f.window.bottom * sc);
+    /**
+     * The icon in `place`'s window and `skin` over it, both drawn in the box (x, y, w, h). The icon is a square cut to the
+     * window's shape from its middle, so it is never stretched.
+     */
+    private void drawIconIn(Canvas c, String pkg, float x, float y, float w, float h, Theme.Frame place, Theme.Frame skin, int a) {
+        dst.set(x + place.window.left * w / place.w, y + place.window.top * h / place.h,
+                x + place.window.right * w / place.w, y + place.window.bottom * h / place.h);
         pBmp.setAlpha(a);
         Bitmap ic = icon(pkg);
-        if (ic != null) c.drawBitmap(ic, null, dst, pBmp);
-        else {
+        if (ic != null) {
+            int side = ic.getWidth(), cut;
+            float ratio = dst.width() / dst.height();
+            if (ratio >= 1) {   // wider than tall: keep the full width, the middle of the height
+                cut = Math.round(side / ratio);
+                src.set(0, (side - cut) / 2, side, (side - cut) / 2 + cut);
+            } else {
+                cut = Math.round(side * ratio);
+                src.set((side - cut) / 2, 0, (side - cut) / 2 + cut, side);
+            }
+            c.drawBitmap(ic, src, dst, pBmp);
+        } else {
             pFill.setColor(Color.rgb(40, 40, 44));
             pFill.setAlpha(a);
             c.drawRect(dst, pFill);
         }
-        frameDst.set(l, t, l + f.w * sc, t + f.h * sc);
-        c.drawBitmap(f.bitmap, null, frameDst, pBmp);
+        frameDst.set(x, y, x + w, y + h);
+        c.drawBitmap(skin.bitmap, null, frameDst, pBmp);
     }
 
     private float polaHeight() {
         return POLA_W * white.h / white.w;
     }
 
+    /** Where the title sits: under the polaroid, whatever its height; the menu goes under the title. */
+    private float titleY() {
+        return POLA_Y + polaHeight() + 85;
+    }
+
+    private float menuY() {
+        return titleY() + 115;
+    }
+
     private void drawPolaroid(Canvas c) {
         Entry e = apps.get(sel);
         float w = POLA_W * k * (1 + 0.12f * pop.value);
-        float sc = w / white.w, h = white.h * sc;
+        float h = w * white.h / white.w;
         float cx = (POLA_X + POLA_W / 2f) * k, cy = (POLA_Y + polaHeight() / 2f) * k;
         c.save();
         c.translate(cx, cy);
-        c.rotate(tilt.value);
-        drawIconIn(c, e.pkg, -w / 2, -h / 2, sc, white, 255);
+        c.rotate(POLA_ANGLE);
+        // The black frame while the focus is on the menu below; the white one fades in over it when the apps have it.
+        drawIconIn(c, e.pkg, -w / 2, -h / 2, w, h, white, polaPlain, 255);
+        float on = Math.max(0f, Math.min(1f, polaOn.value));
+        if (on > 0.01f) {
+            frameDst.set(-w / 2, -h / 2, w / 2, h / 2);
+            pBmp.setAlpha((int) (255 * on));
+            c.drawBitmap(white.bitmap, null, frameDst, pBmp);
+        }
         c.restore();
         pArrow.setAlpha(focus == 0 && mode == HOME ? 235 : 110);
         float ay = (POLA_Y + polaHeight() - 70) * k;
+        drawArrow(c, (POLA_X - 48) * k, ay, false);
+        drawArrow(c, (POLA_X + POLA_W + 26) * k, ay, true);
+    }
+
+    /** The arrow of the theme folder (a left one, mirrored for the right) or a plain triangle. */
+    private void drawArrow(Canvas c, float x, float y, boolean right) {
+        if (arrow == null) {
+            c.save();
+            c.translate(x, y);
+            c.drawPath(right ? arrowRight : arrowLeft, pArrow);
+            c.restore();
+            return;
+        }
+        float aw = arrow.getWidth() * k, ah = arrow.getHeight() * k;
         c.save();
-        c.translate((POLA_X - 48) * k, ay);
-        c.drawPath(arrowLeft, pArrow);
-        c.restore();
-        c.save();
-        c.translate((POLA_X + POLA_W + 26) * k, ay);
-        c.drawPath(arrowRight, pArrow);
+        if (right) {
+            c.translate(x + aw, y);
+            c.scale(-1, 1);
+        } else {
+            c.translate(x, y);
+        }
+        arrowDst.set(0, 0, aw, ah);
+        c.drawBitmap(arrow, null, arrowDst, pArrow);
         c.restore();
     }
 
@@ -506,7 +611,7 @@ final class L4dView extends View {
         boolean on = focus == 0 && mode == HOME;
         pTitle.setColor(SELECTED);
         if (on) glowOn(pTitle);
-        c.drawText(title, POLA_X * k, TITLE_Y * k, pTitle);
+        c.drawText(title, POLA_X * k, titleY() * k, pTitle);
         pTitle.clearShadowLayer();
     }
 
@@ -516,23 +621,24 @@ final class L4dView extends View {
             boolean on = mode == HOME ? focus == i + 1 : mode == EXTRAS && i == 3;
             pMenu.setColor(on ? SELECTED : IDLE);
             if (on) glowOn(pMenu);
-            c.drawText(menu[i], x, (MENU_Y + i * MENU_STEP) * k, pMenu);
+            c.drawText(menu[i], x, (menuY() + i * MENU_STEP) * k, pMenu);
             pMenu.clearShadowLayer();
         }
     }
 
     /** The little menu of Extras, beside it, like the game's: black with a red outline. */
     private void drawExtras(Canvas c) {
-        float left = (POLA_X + 330) * k, top = (MENU_Y + 3 * MENU_STEP - 44) * k;
-        float w = 700 * k, rowH = 56 * k, h = 3 * rowH + 28 * k;
+        float left = (POLA_X + 330) * k, top = (menuY() + 3 * MENU_STEP - 44) * k;
+        float w = 700 * k, rowH = 56 * k, h = 4 * rowH + 28 * k;
         pFill.setColor(Color.argb(238, 0, 0, 0));
         c.drawRect(left, top, left + w, top + h, pFill);
         pStroke.setColor(RED);
         c.drawRect(left, top, left + w, top + h, pStroke);
-        String[] rows = {Ui.tr("Names in the carousel"), Ui.tr("TV Settings"), Ui.tr("Original home screen")};
+        String[] rows = {Ui.tr("Blog Post"), Ui.tr("Names in the carousel"), Ui.tr("TV Settings"), Ui.tr("Original home screen")};
         for (int i = 0; i < rows.length; i++) {
             boolean on = sub == i;
-            float base = top + 14 * k + rowH * i + rowH / 2 + Ui.halfCap(pSub);
+            float mid = top + 14 * k + rowH * i + rowH / 2;
+            float base = mid + Ui.halfCap(pSub);
             pSub.setColor(on ? SELECTED : IDLE);
             pValue.setColor(on ? SELECTED : IDLE);
             if (on) {
@@ -540,9 +646,160 @@ final class L4dView extends View {
                 glowOn(pValue);
             }
             c.drawText(rows[i], left + 26 * k, base, pSub);
-            if (i == 0) c.drawText(names ? Ui.tr("On") : Ui.tr("Off"), left + w - 26 * k, base, pValue);
+            if (i == 1) c.drawText(names ? Ui.tr("On") : Ui.tr("Off"), left + w - 26 * k, base, pValue);
             pSub.clearShadowLayer();
             pValue.clearShadowLayer();
+            if (i == 0 && on && biohazard != null) {   // the game marks its blog entry with this sign, on the left
+                float s = 36 * k;
+                arrowDst.set(left - 52 * k, mid - s / 2, left - 52 * k + s, mid + s / 2);
+                pBmp.setAlpha((int) (255 * Math.max(0f, Math.min(1f, glow.value))));
+                c.drawBitmap(biohazard, null, arrowDst, pBmp);
+            }
+        }
+    }
+
+    // MARK: - The blog post
+
+    private int blogMaxTop() {
+        return Math.max(0, blogLines.size() - BLOG_LINES);
+    }
+
+    /** The post's text broken into lines that fit its column. */
+    private void layoutBlog() {
+        blogLines.clear();
+        float max = BLOG_BODY_W * k;
+        for (String para : blog.paragraphs) {
+            if (para.isEmpty()) {
+                blogLines.add("");
+                continue;
+            }
+            StringBuilder line = new StringBuilder();
+            for (String word : para.split(" ")) {
+                String tryLine = line.length() == 0 ? word : line + " " + word;
+                if (pBody.measureText(tryLine) <= max) {
+                    line.setLength(0);
+                    line.append(tryLine);
+                    continue;
+                }
+                if (line.length() > 0) {
+                    blogLines.add(line.toString());
+                    line.setLength(0);
+                }
+                String rest = word;
+                while (pBody.measureText(rest) > max) {   // a word longer than the column is cut
+                    int n = Math.max(1, pBody.breakText(rest, true, max, null));
+                    blogLines.add(rest.substring(0, n));
+                    rest = rest.substring(n);
+                }
+                line.append(rest);
+            }
+            if (line.length() > 0) blogLines.add(line.toString());
+        }
+        blogTop = Math.min(blogTop, blogMaxTop());
+        blogScroll.snap(blogTop);
+    }
+
+    private void openBlog() {
+        mode = BLOG;
+        blogFocus = 0;
+        blogTop = 0;
+        layoutBlog();
+        glow.snap(0);
+        glow.target = 1;
+    }
+
+    private void drawBlog(Canvas c) {
+        c.drawText(blog.date, BLOG_X * k, BLOG_DATE_Y * k, pHead);
+        c.drawText(blog.title, BLOG_X * k, BLOG_TITLE_Y * k, pHead);
+        // the text: white when it is the one selected, as dim as the menu's options when not
+        pBody.setColor(blogFocus == 0 ? SELECTED : IDLE);
+        c.save();
+        c.clipRect(0, (BLOG_BODY_Y - BLOG_SIZE) * k, 1000 * k, (BLOG_BODY_Y + (BLOG_LINES - 1) * BLOG_LINE + 14) * k);
+        int first = Math.max(0, (int) Math.floor(blogScroll.value) - 1);
+        for (int i = first; i < blogLines.size() && i <= first + BLOG_LINES + 2; i++) {
+            c.drawText(blogLines.get(i), BLOG_BODY_X * k, (BLOG_BODY_Y + (i - blogScroll.value) * BLOG_LINE) * k, pBody);
+        }
+        c.restore();
+        // the picture, and under it the link
+        if (blogImage != null) {
+            dst.set(BLOG_IMG_X * k, BLOG_IMG_Y * k, (BLOG_IMG_X + BLOG_IMG_W) * k, (BLOG_IMG_Y + BLOG_IMG_H) * k);
+            pBmp.setAlpha(255);
+            c.drawBitmap(blogImage, null, dst, pBmp);
+        }
+        float cx = (BLOG_IMG_X + BLOG_IMG_W / 2) * k;
+        pBody.setTextAlign(Paint.Align.CENTER);
+        pBody.setColor(blogFocus == 1 ? SELECTED : IDLE);
+        if (blogFocus == 1) glowOn(pBody);
+        c.drawText(blog.caption, cx, (BLOG_IMG_Y + BLOG_IMG_H + 62) * k, pBody);
+        pBody.clearShadowLayer();
+        pBody.setTextAlign(Paint.Align.LEFT);
+        // Back, with the theme's arrow in red
+        float ah = 56 * k, aw = arrow == null ? 40 * k : ah * arrow.getWidth() / arrow.getHeight();
+        float ay = BLOG_BACK_Y * k;
+        if (arrow != null) {
+            arrowDst.set(BLOG_BACK_X * k, ay, BLOG_BACK_X * k + aw, ay + ah);
+            c.drawBitmap(arrow, null, arrowDst, pTint);
+        } else {
+            pArrow.setColor(BLOG_RED);
+            c.save();
+            c.translate(BLOG_BACK_X * k, ay + (ah - 32 * k) / 2);
+            c.drawPath(arrowLeft, pArrow);
+            c.restore();
+            pArrow.setColor(Color.WHITE);
+        }
+        pBack.setColor(blogFocus == 2 ? SELECTED : IDLE);
+        if (blogFocus == 2) glowOn(pBack);
+        c.drawText(Ui.tr("Back").toUpperCase(Ui.locale()), BLOG_BACK_X * k + aw + 34 * k, ay + ah / 2 + Ui.halfCap(pBack), pBack);
+        pBack.clearShadowLayer();
+    }
+
+    private void blogScrollBy(int lines) {
+        blogTop = Math.max(0, Math.min(blogMaxTop(), blogTop + lines));
+        blogScroll.target = blogTop;
+    }
+
+    private void blogKey(int code, boolean ok) {
+        switch (code) {
+            case KeyEvent.KEYCODE_DPAD_UP:
+                if (blogFocus == 0) blogScrollBy(-1);
+                else if (blogFocus == 2) blogFocus = 0;
+                break;
+            case KeyEvent.KEYCODE_DPAD_DOWN:
+                if (blogFocus == 0) {
+                    if (blogTop < blogMaxTop()) blogScrollBy(1);
+                    else blogFocus = 2;
+                } else if (blogFocus == 1) {
+                    blogFocus = 2;
+                }
+                break;
+            case KeyEvent.KEYCODE_DPAD_LEFT:
+                if (blogFocus == 1) blogFocus = 0;
+                break;
+            case KeyEvent.KEYCODE_DPAD_RIGHT:
+                if (blogFocus != 1) blogFocus = 1;
+                break;
+            case KeyEvent.KEYCODE_BACK:
+                mode = EXTRAS;
+                break;
+            default:
+                if (!ok) break;
+                if (blogFocus == 1) openLink();
+                else if (blogFocus == 2) mode = EXTRAS;
+                else if (blogTop < blogMaxTop()) blogScrollBy(BLOG_LINES - 1);
+                else blogFocus = 2;
+        }
+        glow.snap(0);
+        glow.target = 1;
+        invalidate();
+    }
+
+    /** The link under the picture, in the TV's default browser. */
+    private void openLink() {
+        try {
+            act.startActivity(new Intent(Intent.ACTION_VIEW, Uri.parse(blog.link)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK));
+        } catch (RuntimeException e) {
+            AppLog.w("blog link: " + e.getMessage());
+            toast(Ui.trf("Couldn't open {app}.", "app", blog.link));
         }
     }
 
@@ -556,7 +813,7 @@ final class L4dView extends View {
         pTitle.setColor(SELECTED);
         c.drawText(menu[0], POLA_X * k, 110 * k, pTitle);
         int n = apps.size();
-        Theme.Frame f = names ? black : plain;
+        Theme.Frame f = names ? tileName : tilePlain;
         float tileH = TILE_W * f.h / f.w, rowH = tileH + 52;
         c.save();
         c.clipRect(0, 130 * k, getWidth(), getHeight());
@@ -567,16 +824,15 @@ final class L4dView extends View {
             float x = (gridLeft() + col * (TILE_W + GRID_GAP)) * k;
             Entry e = apps.get(i);
             if (i == gridSel) {
-                // the focused one grows into a white frame
-                float w = TILE_W * k * 1.12f, sc = w / white.w, h = white.h * sc;
-                float cx = x + TILE_W * k / 2, cy = y + tileH * k / 2;
+                // the focused one grows into a white frame, turned like the polaroid
+                float w = TILE_W * k * 1.12f, h = w * white.h / white.w;
                 c.save();
-                c.translate(cx, cy);
-                c.rotate(e.angle * 0.5f);
-                drawIconIn(c, e.pkg, -w / 2, -h / 2, sc, white, 255);
+                c.translate(x + TILE_W * k / 2, y + tileH * k / 2);
+                c.rotate(POLA_ANGLE);
+                drawIconIn(c, e.pkg, -w / 2, -h / 2, w, h, white, white, 255);
                 c.restore();
             } else {
-                drawTile(c, e, x, y, TILE_W * k, f, 1f, names);
+                drawTile(c, e, x, y, TILE_W * k, 1f, names);
             }
         }
         c.restore();
@@ -606,7 +862,6 @@ final class L4dView extends View {
         slide.target = 0;
         pop.snap(1);
         pop.target = 0;
-        tilt.target = apps.get(sel).angle;
         layoutTitle();
         invalidate();
     }
@@ -622,6 +877,7 @@ final class L4dView extends View {
         boolean ok = code == KeyEvent.KEYCODE_DPAD_CENTER || code == KeyEvent.KEYCODE_ENTER || code == KeyEvent.KEYCODE_NUMPAD_ENTER;
         if (mode == GRID) gridKey(code, ok);
         else if (mode == EXTRAS) extrasKey(code, ok);
+        else if (mode == BLOG) blogKey(code, ok);
         else homeKey(code, ok);
         return true;
     }
@@ -680,7 +936,7 @@ final class L4dView extends View {
     private void extrasKey(int code, boolean ok) {
         switch (code) {
             case KeyEvent.KEYCODE_DPAD_DOWN:
-                sub = Math.min(2, sub + 1);
+                sub = Math.min(3, sub + 1);
                 glow.snap(0);
                 glow.target = 1;
                 break;
@@ -698,9 +954,11 @@ final class L4dView extends View {
             default:
                 if (!ok) break;
                 if (sub == 0) {
+                    openBlog();
+                } else if (sub == 1) {
                     names = !names;
                     Prefs.setL4dNames(names);
-                } else if (sub == 1) {
+                } else if (sub == 2) {
                     if (!HomeApps.open(act, HomeApps.tvSettings(), null)) toast(Ui.tr("Couldn't open TV Settings"));
                 } else {
                     Prefs.setL4d2(false);
