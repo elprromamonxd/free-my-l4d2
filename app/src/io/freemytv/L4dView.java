@@ -52,8 +52,16 @@ final class L4dView extends View {
     private static final float MENU_STEP = 50;
     /** The polaroid's turn: one angle for every app, to the left (negative = counterclockwise), as in the game. */
     private static final float POLA_ANGLE = -3f;
+    /**
+     * The turn of the wheel, measured on the game's own menu: it lasts 200 ms and everything moves at a steady pace (no easing, no
+     * bounce). The app that goes between the strip and the polaroid flies in the black frame for the first ANIM_FLIGHT of it and turns
+     * from 0 to the polaroid's angle on the way; the title changes when it ends.
+     */
+    private static final float ANIM_MS = 200, ANIM_FLIGHT = 0.93f;
+    /** The clock is turned like the game's logo it stands in for (to the left, negative). */
+    private static final float CLOCK_ANGLE = -3f;
     /** How far each place of the strip sits above (-) or below (+) the line, from the place before the first to the one after the last: the game's tiles are not lined up. */
-    private static final float[] JITTER = {0, -6, 2, 7, 3, -3, 0};
+    private static final float[] JITTER = {0, 0, 0, 0, 0, 0, 0};   // all in one line, like the game's
     private static final float TITLE_SIZE = 40, DESC_SIZE = 28, MENU_SIZE = 35, LABEL_SIZE = 22;
     private static final float CLOCK_RIGHT = 1800, CLOCK_BASE = 200, CLOCK_SIZE = 150, AMPM_SIZE = 60;
     /** The clock is the menu's own gray at 70 % (the colon keeps its red, also at 70 %). */
@@ -115,7 +123,11 @@ final class L4dView extends View {
 
     private final Theme.Frame rawWhite, rawName, rawPlain;   // as they were read
     private Theme.Frame white, tileName, tilePlain;          // at the size they are drawn
-    private final Bitmap arrow;
+    private final Bitmap arrow, arrowL, arrowR;
+    private boolean animating;
+    private int animDir, animFrom;                            // which way the wheel turns, and which app was the polaroid
+    private long animStart;
+    private float animP;                                      // how far the turn is, 0 to 1
     private Theme.Frame polaPlain;                            // the polaroid's black frame, at its size
     private final Blog blog;
     private final Bitmap blogImage, biohazard;
@@ -124,9 +136,8 @@ final class L4dView extends View {
     private final RectF arrowDst = new RectF();
     private final Rect src = new Rect();
 
-    // The springs: the glow of the focused text, the strip's slide (in slots), the grid's scroll (in rows).
-    private final Spring glow = new Spring(0.30f, 1f, 1), slide = new Spring(0.22f, 1f, 0),
-            polaOn = new Spring(0.25f, 1f, 1), blogScroll = new Spring(0.2f, 1f, 0), scroll = new Spring(0.26f, 1f, 0);
+    // The springs: the glow of the focused text, the grid's scroll (in rows).
+    private final Spring glow = new Spring(0.30f, 1f, 1), polaOn = new Spring(0.25f, 1f, 1), blogScroll = new Spring(0.2f, 1f, 0), scroll = new Spring(0.26f, 1f, 0);
     private long last;
 
     private final Paint pBg = new Paint(), pBmp = new Paint(Paint.FILTER_BITMAP_FLAG | Paint.ANTI_ALIAS_FLAG),
@@ -171,7 +182,7 @@ final class L4dView extends View {
         pValue.setTextAlign(Paint.Align.RIGHT);
         pLabel = Ui.text(tTitle, LABEL_SIZE, SELECTED);
         pClock = Ui.text(tClock, CLOCK_SIZE, IDLE);
-        pColon = Ui.text(tClock, CLOCK_SIZE, RED);
+        pColon = Ui.text(tClock, CLOCK_SIZE, IDLE);
         pAmPm = Ui.text(tClock, AMPM_SIZE, IDLE);
         pClock.setAlpha(CLOCK_ALPHA);
         pColon.setAlpha(CLOCK_ALPHA);
@@ -200,6 +211,8 @@ final class L4dView extends View {
         tileName = rawName;
         tilePlain = rawPlain;
         arrow = Theme.arrow(a);
+        arrowL = Theme.image(a, "arrow_left.png");
+        arrowR = Theme.image(a, "arrow_right.png");
         blog = Blog.load(a);
         blogImage = Theme.image(a, "blog.png");
         biohazard = Theme.image(a, "biohazard.png");
@@ -441,15 +454,22 @@ final class L4dView extends View {
         float dt = last == 0 ? 0.016f : Math.min((now - last) / 1e9f, 0.05f);
         last = now;
         polaOn.target = focus == 0 && mode == HOME ? 1 : 0;
-        boolean moving = glow.step(dt) | slide.step(dt) | scroll.step(dt) | polaOn.step(dt) | blogScroll.step(dt);
+        if (animating) {
+            animP = (now - animStart) / (ANIM_MS * 1e6f);
+            if (animP >= 1f) finishTurn();
+        }
+        boolean moving = animating | glow.step(dt) | scroll.step(dt) | polaOn.step(dt) | blogScroll.step(dt);
         c.drawRect(0, 0, getWidth(), getHeight(), pBg);
         if (mode == GRID) drawGrid(c);
         else if (mode == BLOG) drawBlog(c);
         else {
             drawClock(c);
             if (!apps.isEmpty()) {
-                drawStrip(c);
-                drawPolaroid(c);
+                if (animating) drawTurn(c);
+                else {
+                    drawStrip(c);
+                    drawPolaroid(c);
+                }
                 drawTitle(c);
             }
             drawMenu(c);
@@ -470,38 +490,72 @@ final class L4dView extends View {
     }
 
     private void drawClock(Canvas c) {
-        float x = CLOCK_RIGHT * k - hhW - colonW - mmW - (ap.isEmpty() ? 0 : apW + 12 * k);
+        float total = hhW + colonW + mmW + (ap.isEmpty() ? 0 : apW + 12 * k);
+        float x = CLOCK_RIGHT * k - total;
         float y = CLOCK_BASE * k;
+        c.save();
+        c.rotate(CLOCK_ANGLE, x + total / 2, y - Ui.cap(pClock) / 2);
         c.drawText(hh, x, y, pClock);
         c.drawText(":", x + hhW, y, pColon);
         c.drawText(mm, x + hhW + colonW, y, pClock);
         if (!ap.isEmpty()) c.drawText(ap, x + hhW + colonW + mmW + 12 * k, y - Ui.cap(pClock) + Ui.cap(pAmPm), pAmPm);
+        c.restore();
     }
 
-    /** The other apps, turning like a wheel: the one that left the polaroid goes to the end. */
+    /** The other apps in their line, as they stand when the wheel is still. */
     private void drawStrip(Canvas c) {
         int n = apps.size();
         int s = Math.min(STRIP_N, n - 1);
-        if (s <= 0) return;
-        float v = slide.value;
-        for (int j = -1; j <= s; j++) {
-            float alpha = 1;
-            if (v > 0) {
-                if (j == s) continue;
-                if (j == -1) alpha = v;
-                else if (j == s - 1) alpha = 1 - v;
-            } else if (v < 0) {
-                if (j == -1) continue;
-                if (j == 0) alpha = 1 + v;
-                else if (j == s) alpha = -v;
-            } else if (j == -1 || j == s) continue;
-            alpha = Math.max(0f, Math.min(1f, alpha));
-            if (alpha < 0.01f) continue;
+        for (int j = 0; j < s; j++) {
             Entry e = apps.get(Math.floorMod(sel + 1 + j, n));
-            float pos = j + v;
-            float x = (STRIP_X + pos * STEP) * k;
-            drawTile(c, e, x, (STRIP_Y + jitter(pos)) * k, TILE_W * k, alpha, names);
+            drawTile(c, e, (STRIP_X + j * STEP) * k, (STRIP_Y + jitter(j)) * k, TILE_W * k, 1f, names);
         }
+    }
+
+    private static float lerp(float a, float b, float t) {
+        return a + (b - a) * t;
+    }
+
+    /** An app at a pose: its middle and width (in 1920x1080 pixels) and its turn, in the frame `skin`, with `alpha`. */
+    private void drawPose(Canvas c, Entry e, float cx, float cy, float w, float angle, Theme.Frame skin, float alpha) {
+        float wp = w * k, h = wp * skin.h / skin.w;
+        c.save();
+        c.translate(cx * k, cy * k);
+        c.rotate(angle);
+        drawIconIn(c, e.pkg, -wp / 2, -h / 2, wp, h, skin, skin, (int) (255 * Math.max(0f, Math.min(1f, alpha))));
+        c.restore();
+    }
+
+    /**
+     * The wheel turning, as in the game's menu. Right: the strip's first app flies to the polaroid (growing, turning, in the black
+     * frame, which becomes the white one on arrival) while the old polaroid slips away to the left, fading, and the strip moves one
+     * place left with a new app coming in at its end. Left: the same backwards: the polaroid shrinks into the strip's first place
+     * and a new one comes in from the left.
+     */
+    private void drawTurn(Canvas c) {
+        int n = apps.size();
+        int s = Math.min(STRIP_N, n - 1);
+        boolean right = animDir > 0;
+        float p = animP, t = Math.min(1f, p / ANIM_FLIGHT);
+        for (int j = right ? 1 : 0; j < s + (right ? 1 : 0); j++) {
+            float pos = right ? j - p : j + p;
+            float alpha = 1;
+            if (right && j == s) alpha = p;                 // the one that comes in at the end
+            else if (!right && j == s - 1) alpha = 1 - p;   // the last one goes out
+            drawTile(c, apps.get(Math.floorMod(animFrom + 1 + j, n)), (STRIP_X + pos * STEP) * k, STRIP_Y * k, TILE_W * k, alpha, names);
+        }
+        float pcx = POLA_X + POLA_W / 2f, pcy = POLA_Y + polaHeight() / 2f;
+        float tileH = TILE_W * polaPlain.h / polaPlain.w;
+        float scx = STRIP_X + TILE_W / 2f, scy = STRIP_Y + tileH / 2f;
+        if (right) {
+            drawPose(c, apps.get(animFrom), pcx - POLA_W * 1.1f * p, pcy, POLA_W * (1 - 0.15f * p), POLA_ANGLE, white, 1 - p);
+            drawPose(c, apps.get(sel), lerp(scx, pcx, t), lerp(scy, pcy, t), lerp(TILE_W, POLA_W, t), POLA_ANGLE * t,
+                    p < ANIM_FLIGHT ? polaPlain : white, 1);
+        } else {
+            drawPose(c, apps.get(sel), pcx - POLA_W * 1.1f * (1 - p), pcy, POLA_W * (0.85f + 0.15f * p), POLA_ANGLE, white, p);
+            drawPose(c, apps.get(animFrom), lerp(pcx, scx, t), lerp(pcy, scy, t), lerp(POLA_W, TILE_W, t), POLA_ANGLE * (1 - t), polaPlain, 1);
+        }
+        drawArrows(c);
     }
 
     /** The line's offset at a (fractional) place of the strip: the places keep their own, the tiles move through them. */
@@ -591,31 +645,37 @@ final class L4dView extends View {
             c.drawBitmap(white.bitmap, null, frameDst, pBmp);
         }
         c.restore();
-        pArrow.setAlpha(focus == 0 && mode == HOME ? 235 : 110);
-        float ay = (POLA_Y + polaHeight() - 70) * k;
-        drawArrow(c, (POLA_X - 48) * k, ay, false);
-        drawArrow(c, (POLA_X + POLA_W + 26) * k, ay, true);
+        drawArrows(c);
     }
 
-    /** The arrow of the theme folder (a left one, mirrored for the right) or a plain triangle. */
-    private void drawArrow(Canvas c, float x, float y, boolean right) {
-        if (arrow == null) {
+    private void drawArrows(Canvas c) {
+        pArrow.setAlpha(focus == 0 && mode == HOME ? 235 : 110);
+        float cy = (POLA_Y + polaHeight() - 48) * k;   // their middle line
+        drawArrow(c, (POLA_X - 52) * k, cy, false);
+        drawArrow(c, (POLA_X + POLA_W + 20) * k, cy, true);
+    }
+
+    /** An arrow: the theme folder's own left or right picture (arrow_left.png, arrow_right.png), else the old single one mirrored, else a triangle. */
+    private void drawArrow(Canvas c, float x, float cy, boolean right) {
+        Bitmap own = right ? arrowR : arrowL;
+        Bitmap bmp = own != null ? own : arrow;
+        if (bmp == null) {
             c.save();
-            c.translate(x, y);
+            c.translate(x, cy - 16 * k);
             c.drawPath(right ? arrowRight : arrowLeft, pArrow);
             c.restore();
             return;
         }
-        float aw = arrow.getWidth() * k, ah = arrow.getHeight() * k;
+        float aw = bmp.getWidth() * k, ah = bmp.getHeight() * k;
         c.save();
-        if (right) {
-            c.translate(x + aw, y);
+        if (right && own == null) {   // the single old arrow points left: mirror it
+            c.translate(x + aw, cy - ah / 2);
             c.scale(-1, 1);
         } else {
-            c.translate(x, y);
+            c.translate(x, cy - ah / 2);
         }
         arrowDst.set(0, 0, aw, ah);
-        c.drawBitmap(arrow, null, arrowDst, pArrow);
+        c.drawBitmap(bmp, null, arrowDst, pArrow);
         c.restore();
     }
 
@@ -647,6 +707,7 @@ final class L4dView extends View {
         pStroke.setColor(RED);
         c.drawRect(left, top, left + w, top + h, pStroke);
         String[] rows = {Ui.tr("Blog Post"), Ui.tr("Names in the carousel"), Ui.tr("TV Settings"), Ui.tr("Original home screen")};
+        for (int i = 0; i < rows.length; i++) rows[i] = rows[i].toUpperCase(Ui.locale());
         for (int i = 0; i < rows.length; i++) {
             boolean on = sub == i;
             float mid = top + 14 * k + rowH * i + rowH / 2;
@@ -658,7 +719,7 @@ final class L4dView extends View {
                 glowOn(pValue);
             }
             c.drawText(rows[i], left + 26 * k, base, pSub);
-            if (i == 1) c.drawText(names ? Ui.tr("On") : Ui.tr("Off"), left + w - 26 * k, base, pValue);
+            if (i == 1) c.drawText((names ? Ui.tr("On") : Ui.tr("Off")).toUpperCase(Ui.locale()), left + w - 26 * k, base, pValue);
             pSub.clearShadowLayer();
             pValue.clearShadowLayer();
             if (i == 0 && on && biohazard != null) {   // the game marks its blog entry with this sign, on the left
@@ -746,11 +807,12 @@ final class L4dView extends View {
         pBody.clearShadowLayer();
         pBody.setTextAlign(Paint.Align.LEFT);
         // Back, with the theme's arrow in red
-        float ah = 56 * k, aw = arrow == null ? 40 * k : ah * arrow.getWidth() / arrow.getHeight();
+        Bitmap backArrow = arrowL != null ? arrowL : arrow;
+        float ah = 56 * k, aw = backArrow == null ? 40 * k : ah * backArrow.getWidth() / backArrow.getHeight();
         float ay = BLOG_BACK_Y * k;
-        if (arrow != null) {
+        if (backArrow != null) {
             arrowDst.set(BLOG_BACK_X * k, ay, BLOG_BACK_X * k + aw, ay + ah);
-            c.drawBitmap(arrow, null, arrowDst, pTint);
+            c.drawBitmap(backArrow, null, arrowDst, pTint);
         } else {
             pArrow.setColor(BLOG_RED);
             c.save();
@@ -869,11 +931,20 @@ final class L4dView extends View {
     private void turn(int dir) {
         int n = apps.size();
         if (n < 2) return;
+        if (animating) finishTurn();   // a key pressed in the middle of a turn: that one ends at once
+        animFrom = sel;
+        animDir = dir;
         sel = Math.floorMod(sel + dir, n);
-        slide.snap(dir);
-        slide.target = 0;
-        layoutTitle();
+        animating = true;
+        animStart = System.nanoTime();
+        animP = 0;
         invalidate();
+    }
+
+    /** The turn is over: the title changes now, not before. */
+    private void finishTurn() {
+        animating = false;
+        layoutTitle();
     }
 
     boolean onKey(KeyEvent e) {
