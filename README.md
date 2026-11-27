@@ -391,6 +391,7 @@ No accounts, no analytics, no tracking. The app talks to TMDB, Open-Meteo (their
 - Icons: [Material Symbols](https://fonts.google.com/icons) (Apache 2.0). Font: [Inter](https://rsms.me/inter/) (SIL OFL 1.1). Coin logos: [cryptocurrency-icons](https://github.com/spothq/cryptocurrency-icons) (CC0). Samsung app logos: [Simple Icons](https://simpleicons.org) (CC0).
 - The QR code encoder follows Project Nayuki's [QR Code generator](https://www.nayuki.io/page/qr-code-generator-library) (MIT).
 - Not affiliated with Google, TCL, LG, Samsung or any streaming service. App names and logos belong to their owners.
+- C APK PE
 
 ## License
 
